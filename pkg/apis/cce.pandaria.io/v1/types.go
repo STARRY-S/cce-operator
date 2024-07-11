@@ -187,7 +187,7 @@ type CCEClusterExtendParam struct {
 }
 
 type CCEClusterEndpoints struct {
-	Url  string `json:"url,omitempty"`
+	URL  string `json:"url,omitempty"`
 	Type string `json:"type,omitempty"`
 }
 

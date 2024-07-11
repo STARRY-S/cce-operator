@@ -21,21 +21,21 @@ func Test_IsHuaweiError(t *testing.T) {
 
 func Test_NewHuaweiError(t *testing.T) {
 	assert := assert.New(t)
-	vpcErr, err := NewHuaweiError(fmt.Errorf(vpcDeleteError))
+	vpcErr, err := NewError(fmt.Errorf(vpcDeleteError))
 	assert.Nil(err)
 	if t.Failed() {
 		return
 	}
 	fmt.Printf("%v\n", vpcErr.MarshalIndent())
 	fmt.Printf("%v\n", vpcErr.String())
-	clusterError, err := NewHuaweiError(fmt.Errorf(clusterDeleteError))
+	clusterError, err := NewError(fmt.Errorf(clusterDeleteError))
 	assert.Nil(err)
 	if t.Failed() {
 		return
 	}
 	fmt.Printf("%v\n", clusterError.MarshalIndent())
 	fmt.Printf("%v\n", clusterError.String())
-	subnetError, err := NewHuaweiError(fmt.Errorf(subnetDeleteError))
+	subnetError, err := NewError(fmt.Errorf(subnetDeleteError))
 	assert.Nil(err)
 	if t.Failed() {
 		return

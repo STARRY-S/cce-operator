@@ -130,7 +130,7 @@ func (h *Handler) deleteCCECluster(
 	}
 
 	cluster, err := cce.ShowCluster(driver.CCE, config.Spec.ClusterID)
-	if hwerr, _ := huawei.NewHuaweiError(err); hwerr.StatusCode == 404 {
+	if hwerr, _ := huawei.NewError(err); hwerr.StatusCode == 404 {
 		// Cluster deleted, update status.
 		logrus.WithFields(logrus.Fields{
 			"cluster": config.Name,
@@ -211,7 +211,7 @@ func (h *Handler) deleteNetworkResources(
 
 		// Delete NatGateway.
 		_, err = nat.ShowNatGateway(driver.NAT, config.Status.CreatedNatGatewayID)
-		if hwerr, _ := huawei.NewHuaweiError(err); hwerr.StatusCode == 404 {
+		if hwerr, _ := huawei.NewError(err); hwerr.StatusCode == 404 {
 			logrus.WithFields(logrus.Fields{
 				"cluster": config.Name,
 				"phase":   "remove",
@@ -240,7 +240,7 @@ func (h *Handler) deleteNetworkResources(
 	if config.Status.CreatedClusterEIPID != "" {
 		eipID := config.Status.CreatedClusterEIPID
 		_, err = eip.ShowPublicip(driver.EIP, eipID)
-		if hwerr, _ := huawei.NewHuaweiError(err); hwerr.StatusCode == 404 {
+		if hwerr, _ := huawei.NewError(err); hwerr.StatusCode == 404 {
 			config = config.DeepCopy()
 			config.Status.CreatedClusterEIPID = ""
 			config, err = h.cceCC.UpdateStatus(config)
@@ -264,7 +264,7 @@ func (h *Handler) deleteNetworkResources(
 	if config.Status.CreatedSNatRuleEIPID != "" {
 		eipID := config.Status.CreatedSNatRuleEIPID
 		_, err = eip.ShowPublicip(driver.EIP, eipID)
-		if hwerr, _ := huawei.NewHuaweiError(err); hwerr.StatusCode == 404 {
+		if hwerr, _ := huawei.NewError(err); hwerr.StatusCode == 404 {
 			config = config.DeepCopy()
 			config.Status.CreatedSNatRuleEIPID = ""
 			config, err = h.cceCC.UpdateStatus(config)
@@ -292,7 +292,7 @@ func (h *Handler) deleteNetworkResources(
 	)
 	if subnetID != "" {
 		_, err = vpc.ShowSubnet(driver.VPC, subnetID)
-		if hwerr, _ := huawei.NewHuaweiError(err); hwerr.StatusCode == 404 {
+		if hwerr, _ := huawei.NewError(err); hwerr.StatusCode == 404 {
 			logrus.WithFields(logrus.Fields{
 				"cluster": config.Name,
 				"phase":   "remove",
@@ -343,7 +343,7 @@ func (h *Handler) deleteNetworkResources(
 			return config, true, nil
 		}
 		_, err = vpc.ShowVPC(driver.VPC, vpcID)
-		if hwerr, _ := huawei.NewHuaweiError(err); hwerr.StatusCode == 404 {
+		if hwerr, _ := huawei.NewError(err); hwerr.StatusCode == 404 {
 			logrus.WithFields(logrus.Fields{
 				"cluster": config.Name,
 				"phase":   "remove",

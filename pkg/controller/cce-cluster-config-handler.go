@@ -107,7 +107,7 @@ func (h *Handler) recordError(
 		if err != nil {
 			logrus.Warnf("%v", err)
 			if huawei.IsHuaweiError(err) {
-				hwerr, _ := huawei.NewHuaweiError(err)
+				hwerr, _ := huawei.NewError(err)
 				hwerr.RequestID = ""
 				message = hwerr.String()
 			} else {
@@ -298,7 +298,7 @@ func (h *Handler) generateAndSetNetworking(config *ccev1.CCEClusterConfig) (*cce
 		if dnsServers.Nameservers == nil || len(*dnsServers.Nameservers) == 0 {
 			return config, fmt.Errorf("ListNameServers returns invalid data")
 		}
-		var dnsRecords []string = make([]string, 2)
+		var dnsRecords = make([]string, 2)
 		for _, nameserver := range *dnsServers.Nameservers {
 			if nameserver.NsRecords == nil || len(*nameserver.NsRecords) == 0 {
 				continue
@@ -387,7 +387,7 @@ func (h *Handler) generateAndSetNetworking(config *ccev1.CCEClusterConfig) (*cce
 		if dnsServers.Nameservers == nil || len(*dnsServers.Nameservers) == 0 {
 			return config, fmt.Errorf("ListNameServers returns invalid data")
 		}
-		var dnsRecords []string = make([]string, 2)
+		var dnsRecords = make([]string, 2)
 		for _, nameserver := range *dnsServers.Nameservers {
 			if nameserver.NsRecords == nil || len(*nameserver.NsRecords) == 0 {
 				continue
@@ -656,14 +656,13 @@ func (h *Handler) checkAndUpdate(config *ccev1.CCEClusterConfig) (*ccev1.CCEClus
 
 		res, err := cce.ShowUpgradeClusterTask(driver.CCE, config.Spec.ClusterID, config.Status.UpgradeClusterTaskID)
 		if err != nil {
-			hwerr, _ := huawei.NewHuaweiError(err)
+			hwerr, _ := huawei.NewError(err)
 			if hwerr.StatusCode == 404 {
 				config = config.DeepCopy()
 				config.Status.UpgradeClusterTaskID = ""
 				return h.cceCC.UpdateStatus(config)
-			} else {
-				return config, err
 			}
+			return config, err
 		}
 		if res != nil && res.Spec != nil && res.Status != nil {
 			switch utils.Value(res.Status.Phase) {
@@ -722,7 +721,7 @@ func (h *Handler) checkAndUpdate(config *ccev1.CCEClusterConfig) (*ccev1.CCEClus
 		if len(configUpdate.Status.Endpoints) == len(*cluster.Status.Endpoints) {
 			for i := range *cluster.Status.Endpoints {
 				if configUpdate.Status.Endpoints[i].Type != utils.Value((*cluster.Status.Endpoints)[i].Type) ||
-					configUpdate.Status.Endpoints[i].Url != utils.Value((*cluster.Status.Endpoints)[i].Url) {
+					configUpdate.Status.Endpoints[i].URL != utils.Value((*cluster.Status.Endpoints)[i].Url) {
 					updateEndpoints = true
 				}
 			}
@@ -734,7 +733,7 @@ func (h *Handler) checkAndUpdate(config *ccev1.CCEClusterConfig) (*ccev1.CCEClus
 		configUpdate.Status.Endpoints = nil
 		for _, e := range *cluster.Status.Endpoints {
 			configUpdate.Status.Endpoints = append(configUpdate.Status.Endpoints, ccev1.CCEClusterEndpoints{
-				Url:  utils.Value(e.Url),
+				URL:  utils.Value(e.Url),
 				Type: utils.Value(e.Type),
 			})
 		}
@@ -913,7 +912,7 @@ func (h *Handler) updateUpstreamClusterState(
 		if np.ID == "" {
 			continue
 		}
-		_, err := cce.UpdateNodePool(driver.CCE, config.Spec.ClusterID, &np)
+		_, err := cce.UpdateNodePool(driver.CCE, config.Spec.ClusterID, np.DeepCopy())
 		if err != nil {
 			return config, err
 		}
@@ -1133,17 +1132,17 @@ func (h *Handler) createCASecret(config *ccev1.CCEClusterConfig) error {
 		return fmt.Errorf("createCASecret failed: no clusters returned from GetClusterCert")
 	}
 
-	var clusterCert *cce_model.Clusters
+	var clusterCert cce_model.Clusters
 	for _, c := range *certs.Clusters {
 		if config.Spec.PublicAccess && utils.Value(c.Name) == "externalClusterTLSVerify" {
-			clusterCert = &c
+			clusterCert = c
 			break
 		}
 		if utils.Value(c.Name) == "internalCluster" {
-			clusterCert = &c
+			clusterCert = c
 		}
 	}
-	if clusterCert == nil {
+	if clusterCert.Name == nil {
 		return fmt.Errorf("createCASecret: failed to find cluster endpoint")
 	}
 	if clusterCert.Cluster == nil {

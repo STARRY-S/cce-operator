@@ -93,7 +93,7 @@ func GetCreateClusterRequest(config *ccev1.CCEClusterConfig) *model.CreateCluste
 		kubeProxyMode = model.GetClusterSpecKubeProxyModeEnum().IPTABLES
 	}
 
-	var clusterTags []model.ResourceTag
+	clusterTags := []model.ResourceTag{}
 	for k, v := range spec.Tags {
 		clusterTags = append(clusterTags, model.ResourceTag{
 			Key:   utils.Pointer(k),

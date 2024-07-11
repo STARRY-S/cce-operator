@@ -22,9 +22,8 @@ func validateNodePool(config *ccev1.CCEClusterConfig) error {
 		}
 		if nodePoolNames[pool.Name] {
 			return fmt.Errorf("nodePool.name should be unique, duplicated detected: %q", pool.Name)
-		} else {
-			nodePoolNames[pool.Name] = true
 		}
+		nodePoolNames[pool.Name] = true
 		nt := pool.NodeTemplate
 		if nt.Flavor == "" {
 			return fmt.Errorf(cannotBeEmptyError, "nodePool.nodeTemplate.flavor", config.Name)
@@ -83,7 +82,7 @@ func (h *Handler) validateCreate(config *ccev1.CCEClusterConfig) error {
 		}
 		_, err := cce.ShowCluster(driver.CCE, config.Spec.ClusterID)
 		if err != nil {
-			hwerr, _ := huawei.NewHuaweiError(err)
+			hwerr, _ := huawei.NewError(err)
 			if hwerr.StatusCode == 404 {
 				return fmt.Errorf("failed to find cluster [%s]: %v",
 					config.Spec.ClusterID, hwerr.ErrorMessage)
