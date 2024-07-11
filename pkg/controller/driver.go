@@ -20,7 +20,7 @@ import (
 	huawei_nat "github.com/huaweicloud/huaweicloud-sdk-go-v3/services/nat/v2"
 	huawei_vpc "github.com/huaweicloud/huaweicloud-sdk-go-v3/services/vpc/v2"
 	huawei_vpcep "github.com/huaweicloud/huaweicloud-sdk-go-v3/services/vpcep/v1"
-	wranglerv1 "github.com/rancher/wrangler/v2/pkg/generated/controllers/core/v1"
+	wranglerv3 "github.com/rancher/wrangler/v3/pkg/generated/controllers/core/v1"
 	"github.com/sirupsen/logrus"
 )
 
@@ -64,7 +64,7 @@ func NewHuaweiDriver(auth *common.ClientAuth) *HuaweiDriver {
 }
 
 func NewHuaweiClientAuth(
-	secretsCache wranglerv1.SecretCache, spec *ccev1.CCEClusterConfigSpec,
+	secretsCache wranglerv3.SecretCache, spec *ccev1.CCEClusterConfigSpec,
 ) (*common.ClientAuth, error) {
 	region := spec.RegionID
 	if region == "" {

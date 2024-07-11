@@ -1,4 +1,4 @@
-FROM registry.suse.com/bci/golang:1.21
+FROM registry.suse.com/bci/golang:1.22
 
 ARG DAPPER_HOST_ARCH
 ENV ARCH=${DAPPER_HOST_ARCH}
@@ -10,6 +10,11 @@ RUN zypper ref && \
 
 RUN curl -sL https://get.helm.sh/helm-v3.12.1-linux-${ARCH}.tar.gz | \
     tar xvzf - -C /usr/local/bin --strip-components=1
+
+RUN if [ "${ARCH}" = "amd64" ]; then \
+    curl -sL https://install.goreleaser.com/github.com/golangci/golangci-lint.sh | sh -s v1.59.0; \
+fi
+
 # pre-copy/cache go.mod for pre-downloading dependencies
 COPY go.mod go.sum ./
 RUN go mod download && go mod verify

@@ -11,10 +11,10 @@ import (
 	"github.com/cnrancher/cce-operator/pkg/controller"
 	ccev1 "github.com/cnrancher/cce-operator/pkg/generated/controllers/cce.pandaria.io"
 	"github.com/cnrancher/cce-operator/pkg/utils"
-	"github.com/rancher/wrangler/v2/pkg/generated/controllers/core"
-	"github.com/rancher/wrangler/v2/pkg/kubeconfig"
-	"github.com/rancher/wrangler/v2/pkg/signals"
-	"github.com/rancher/wrangler/v2/pkg/start"
+	"github.com/rancher/wrangler/v3/pkg/generated/controllers/core"
+	"github.com/rancher/wrangler/v3/pkg/kubeconfig"
+	"github.com/rancher/wrangler/v3/pkg/signals"
+	"github.com/rancher/wrangler/v3/pkg/start"
 	"github.com/sirupsen/logrus"
 )
 

@@ -18,7 +18,7 @@ import (
 	"github.com/cnrancher/cce-operator/pkg/huawei/vpc"
 	"github.com/cnrancher/cce-operator/pkg/utils"
 	cce_model "github.com/huaweicloud/huaweicloud-sdk-go-v3/services/cce/v3/model"
-	wranglerv1 "github.com/rancher/wrangler/v2/pkg/generated/controllers/core/v1"
+	wranglerv3 "github.com/rancher/wrangler/v3/pkg/generated/controllers/core/v1"
 	"github.com/sirupsen/logrus"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -40,14 +40,14 @@ type Handler struct {
 	cceCC           ccecontrollers.CCEClusterConfigClient
 	cceEnqueueAfter func(namespace, name string, duration time.Duration)
 	cceEnqueue      func(namespace, name string)
-	secrets         wranglerv1.SecretClient
-	secretsCache    wranglerv1.SecretCache
+	secrets         wranglerv3.SecretClient
+	secretsCache    wranglerv3.SecretCache
 	drivers         map[string]*HuaweiDriver
 }
 
 func Register(
 	ctx context.Context,
-	secrets wranglerv1.SecretController,
+	secrets wranglerv3.SecretController,
 	cce ccecontrollers.CCEClusterConfigController,
 ) {
 	h := &Handler{

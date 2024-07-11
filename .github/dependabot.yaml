@@ -35,8 +35,8 @@ updates:
   # Ignore wrangler
   - dependency-name: "github.com/rancher/wrangler"
     update-types: [ "version-update:semver-major", "version-update:semver-minor", "version-update:semver-patch" ]
-  # Ignore wrangler v2
-  - dependency-name: "github.com/rancher/wrangler/v2"
+  # Ignore wrangler v3
+  - dependency-name: "github.com/rancher/wrangler/v3"
     update-types: [ "version-update:semver-major", "version-update:semver-minor", "version-update:semver-patch" ]
   # Ignore huaweicloud-sdk-v3
   - dependency-name: "github.com/huaweicloud/huaweicloud-sdk-go-v3"
@@ -70,8 +70,8 @@ updates:
   # Ignore wrangler
   - dependency-name: "github.com/rancher/wrangler"
     update-types: [ "version-update:semver-major", "version-update:semver-minor", "version-update:semver-patch" ]
-  # Ignore wrangler v2
-  - dependency-name: "github.com/rancher/wrangler/v2"
+  # Ignore wrangler v3
+  - dependency-name: "github.com/rancher/wrangler/v3"
     update-types: [ "version-update:semver-major", "version-update:semver-minor", "version-update:semver-patch" ]
   # Ignore huaweicloud-sdk-v3
   - dependency-name: "github.com/huaweicloud/huaweicloud-sdk-go-v3"
@@ -105,8 +105,8 @@ updates:
   # Ignore wrangler
   - dependency-name: "github.com/rancher/wrangler"
     update-types: [ "version-update:semver-major", "version-update:semver-minor", "version-update:semver-patch" ]
-  # Ignore wrangler v2
-  - dependency-name: "github.com/rancher/wrangler/v2"
+  # Ignore wrangler v3
+  - dependency-name: "github.com/rancher/wrangler/v3"
     update-types: [ "version-update:semver-major", "version-update:semver-minor", "version-update:semver-patch" ]
   # Ignore huaweicloud-sdk-v3
   - dependency-name: "github.com/huaweicloud/huaweicloud-sdk-go-v3"
