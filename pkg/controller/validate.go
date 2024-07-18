@@ -7,7 +7,7 @@ import (
 	ccev1 "github.com/cnrancher/cce-operator/pkg/apis/cce.pandaria.io/v1"
 	"github.com/cnrancher/cce-operator/pkg/huawei"
 	"github.com/cnrancher/cce-operator/pkg/huawei/cce"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 )
 
 const (
@@ -55,11 +55,11 @@ func validateNodePool(config *ccev1.CCEClusterConfig) error {
 func (h *Handler) validateCreate(config *ccev1.CCEClusterConfig) error {
 	driver := h.drivers[config.Spec.HuaweiCredentialSecret]
 	// Check for existing cceclusterconfigs with the same display name
-	cceConfigs, err := h.cceCC.List(config.Namespace, metav1.ListOptions{})
+	cceConfigs, err := h.configCache.List(config.Namespace, labels.Everything())
 	if err != nil {
 		return fmt.Errorf("cannot list cceclusterconfigs for display name check")
 	}
-	for _, c := range cceConfigs.Items {
+	for _, c := range cceConfigs {
 		if c.Spec.Name == config.Spec.Name && c.Name != config.Name {
 			return fmt.Errorf("cannot create cluster [%s] because an cceclusterconfig "+
 				"exists with the same name", config.Spec.Name)

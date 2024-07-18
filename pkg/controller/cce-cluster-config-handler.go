@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"reflect"
 	"time"
 
 	"github.com/Masterminds/semver/v3"
@@ -21,6 +22,7 @@ import (
 	wranglerv3 "github.com/rancher/wrangler/v3/pkg/generated/controllers/core/v1"
 	"github.com/sirupsen/logrus"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/util/retry"
 )
@@ -37,12 +39,13 @@ const (
 )
 
 type Handler struct {
-	cceCC           ccecontrollers.CCEClusterConfigClient
-	cceEnqueueAfter func(namespace, name string, duration time.Duration)
-	cceEnqueue      func(namespace, name string)
-	secrets         wranglerv3.SecretClient
-	secretsCache    wranglerv3.SecretCache
-	drivers         map[string]*HuaweiDriver
+	configClient  ccecontrollers.CCEClusterConfigClient
+	configCache   ccecontrollers.CCEClusterConfigCache
+	enqueueAfter  func(namespace, name string, duration time.Duration)
+	enqueue       func(namespace, name string)
+	secretsClient wranglerv3.SecretClient
+	secretsCache  wranglerv3.SecretCache
+	drivers       map[string]*HuaweiDriver
 }
 
 func Register(
@@ -51,12 +54,13 @@ func Register(
 	cce ccecontrollers.CCEClusterConfigController,
 ) {
 	h := &Handler{
-		cceCC:           cce,
-		cceEnqueue:      cce.Enqueue,
-		cceEnqueueAfter: cce.EnqueueAfter,
-		secretsCache:    secrets.Cache(),
-		secrets:         secrets,
-		drivers:         make(map[string]*HuaweiDriver),
+		configClient:  cce,
+		configCache:   cce.Cache(),
+		enqueue:       cce.Enqueue,
+		enqueueAfter:  cce.EnqueueAfter,
+		secretsCache:  secrets.Cache(),
+		secretsClient: secrets,
+		drivers:       make(map[string]*HuaweiDriver),
 	}
 
 	// Register handlers
@@ -118,15 +122,9 @@ func (h *Handler) recordError(
 		if config.Name == "" {
 			return config, err
 		}
-
 		if config.Status.FailureMessage == message {
-			// Avoid trigger the HWCloud API rate limit.
-			if message != "" {
-				time.Sleep(time.Second * 5)
-			}
 			return config, err
 		}
-
 		config = config.DeepCopy()
 		if message != "" && config.Status.Phase == cceConfigActivePhase {
 			// can assume an update is failing
@@ -135,30 +133,32 @@ func (h *Handler) recordError(
 		config.Status.FailureMessage = message
 
 		var recordErr error
-		config, recordErr = h.cceCC.UpdateStatus(config)
+		configUpdate, recordErr := h.configClient.UpdateStatus(config)
 		if recordErr != nil {
 			logrus.Errorf("Error recording cce cluster config [%s] failure message: %v",
 				config.Name, recordErr)
+			return config, err
 		}
 
-		return config, err
+		return configUpdate, nil
 	}
 }
 
 func (h *Handler) create(config *ccev1.CCEClusterConfig) (*ccev1.CCEClusterConfig, error) {
 	driver := h.drivers[config.Spec.HuaweiCredentialSecret]
 	var err error
-	if config, err = h.cceCC.Get(config.Namespace, config.Name, metav1.GetOptions{}); err != nil {
-		return config, err
-	}
 	if err = h.validateCreate(config); err != nil {
 		return config, err
 	}
 
 	if config.Spec.Imported {
-		config = config.DeepCopy()
-		config.Status.Phase = cceConfigImportingPhase
-		return h.cceCC.UpdateStatus(config)
+		configUpdate := config.DeepCopy()
+		configUpdate.Status.Phase = cceConfigImportingPhase
+		configUpdate, err = h.configClient.UpdateStatus(configUpdate)
+		if err != nil {
+			return config, err
+		}
+		return configUpdate, nil
 	}
 
 	if config, err = h.generateAndSetNetworking(config); err != nil {
@@ -172,9 +172,13 @@ func (h *Handler) create(config *ccev1.CCEClusterConfig) (*ccev1.CCEClusterConfi
 				"phase":   "create",
 			}).Infof("cluster [%s] ID [%s] created, switch to creating phase",
 				config.Spec.Name, config.Spec.ClusterID)
-			config = config.DeepCopy()
-			config.Status.Phase = cceConfigCreatingPhase
-			return h.cceCC.UpdateStatus(config)
+			configUpdate := config.DeepCopy()
+			configUpdate.Status.Phase = cceConfigCreatingPhase
+			configUpdate, err = h.configClient.UpdateStatus(config)
+			if err != nil {
+				return config, err
+			}
+			return configUpdate, nil
 		}
 	}
 	// Create cluster.
@@ -189,28 +193,45 @@ func (h *Handler) create(config *ccev1.CCEClusterConfig) (*ccev1.CCEClusterConfi
 	// Use the RetryOnConflict to prevent repeated creation of cluster.
 	// Update spec (ClusterID).
 	if err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		config, err = h.cceCC.Get(config.Namespace, config.Name, metav1.GetOptions{})
+		result, err := h.configCache.Get(config.Namespace, config.Name)
+		if err != nil {
+			return fmt.Errorf("failed to get cceConfig from cache: %w", err)
+		}
+		if result.Spec.ClusterID == utils.Value(cluster.Metadata.Uid) {
+			config = result
+			return nil
+		}
+
+		result = result.DeepCopy()
+		result.Spec.ClusterID = utils.Value(cluster.Metadata.Uid)
+		result, err = h.configClient.Update(result)
 		if err != nil {
 			return err
 		}
-		config = config.DeepCopy()
-		config.Spec.ClusterID = utils.Value(cluster.Metadata.Uid)
-		config, err = h.cceCC.Update(config)
-		return err
+		config = result
+		return nil
 	}); err != nil {
 		return config, err
 	}
 	// Update status (Phase).
 	if err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		config, err = h.cceCC.Get(config.Namespace, config.Name, metav1.GetOptions{})
+		result, err := h.configCache.Get(config.Namespace, config.Name)
 		if err != nil {
 			return err
 		}
-		config = config.DeepCopy()
-		config.Status.Phase = cceConfigCreatingPhase
-		config.Status.FailureMessage = ""
-		config, err = h.cceCC.UpdateStatus(config)
-		return err
+		if result.Status.Phase == cceConfigCreatingPhase && result.Status.FailureMessage == "" {
+			config = result
+			return nil
+		}
+		result = result.DeepCopy()
+		result.Status.Phase = cceConfigCreatingPhase
+		result.Status.FailureMessage = ""
+		result, err = h.configClient.UpdateStatus(config)
+		if err != nil {
+			return err
+		}
+		config = result
+		return nil
 	}); err != nil {
 		return config, err
 	}
@@ -241,15 +262,25 @@ func (h *Handler) generateAndSetNetworking(config *ccev1.CCEClusterConfig) (*cce
 			utils.Value(res.Publicip.Alias), utils.Value(res.Publicip.PublicIpAddress))
 		// Use the RetryOnConflict to prevent repeated creation of EIP.
 		if err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
-			config, err = h.cceCC.Get(config.Namespace, config.Name, metav1.GetOptions{})
+			result, err := h.configCache.Get(config.Namespace, config.Name)
+			if err != nil {
+				return fmt.Errorf("failed to get config from cache: %w", err)
+			}
+			if result.Status.ClusterExternalIP == utils.Value(res.Publicip.PublicIpAddress) &&
+				result.Status.CreatedClusterEIPID == utils.Value(res.Publicip.Id) {
+				config = result
+				return nil
+			}
+
+			result = result.DeepCopy()
+			result.Status.ClusterExternalIP = utils.Value(res.Publicip.PublicIpAddress)
+			result.Status.CreatedClusterEIPID = utils.Value(res.Publicip.Id)
+			result, err = h.configClient.UpdateStatus(result)
 			if err != nil {
 				return err
 			}
-			configUpdate := config.DeepCopy()
-			configUpdate.Status.ClusterExternalIP = utils.Value(res.Publicip.PublicIpAddress)
-			configUpdate.Status.CreatedClusterEIPID = utils.Value(res.Publicip.Id)
-			config, err = h.cceCC.UpdateStatus(configUpdate)
-			return err
+			config = result
+			return nil
 		}); err != nil {
 			return config, err
 		}
@@ -257,14 +288,23 @@ func (h *Handler) generateAndSetNetworking(config *ccev1.CCEClusterConfig) (*cce
 	// Do not create cluster public IP and use existing EIP address.
 	if config.Spec.PublicAccess && config.Status.ClusterExternalIP == "" && config.Spec.ExtendParam.ClusterExternalIP != "" {
 		if err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
-			config, err = h.cceCC.Get(config.Namespace, config.Name, metav1.GetOptions{})
+			result, err := h.configCache.Get(config.Namespace, config.Name)
 			if err != nil {
 				return err
 			}
-			configUpdate := config.DeepCopy()
-			configUpdate.Status.ClusterExternalIP = config.Spec.ExtendParam.ClusterExternalIP
-			config, err = h.cceCC.UpdateStatus(configUpdate)
-			return err
+			if result.Status.ClusterExternalIP == result.Spec.ExtendParam.ClusterExternalIP {
+				config = result
+				return nil
+			}
+
+			result = result.DeepCopy()
+			result.Status.ClusterExternalIP = result.Spec.ExtendParam.ClusterExternalIP
+			result, err = h.configClient.UpdateStatus(result)
+			if err != nil {
+				return err
+			}
+			config = result
+			return nil
 		}); err != nil {
 			return config, err
 		}
@@ -334,29 +374,49 @@ func (h *Handler) generateAndSetNetworking(config *ccev1.CCEClusterConfig) (*cce
 		// Update status.
 		// Use the RetryOnConflict to prevent repeated creation of VPC & Subnet.
 		if err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
-			config, err = h.cceCC.Get(config.Namespace, config.Name, metav1.GetOptions{})
+			result, err := h.configCache.Get(config.Namespace, config.Name)
 			if err != nil {
 				return err
 			}
-			configUpdate := config.DeepCopy()
-			configUpdate.Status.CreatedVpcID = vpcRes.Vpc.Id
-			configUpdate.Status.CreatedSubnetID = subnetRes.Subnet.Id
-			config, err = h.cceCC.UpdateStatus(configUpdate)
-			return err
+			if result.Status.CreatedVpcID == vpcRes.Vpc.Id &&
+				result.Status.CreatedSubnetID == subnetRes.Subnet.Id {
+				config = result
+				return nil
+			}
+
+			result = result.DeepCopy()
+			result.Status.CreatedVpcID = vpcRes.Vpc.Id
+			result.Status.CreatedSubnetID = subnetRes.Subnet.Id
+			result, err = h.configClient.UpdateStatus(result)
+			if err != nil {
+				return err
+			}
+			config = result
+			return nil
 		}); err != nil {
 			return config, err
 		}
 		// Update spec.
 		if err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
-			config, err = h.cceCC.Get(config.Namespace, config.Name, metav1.GetOptions{})
+			result, err := h.configCache.Get(config.Namespace, config.Name)
 			if err != nil {
 				return err
 			}
-			configUpdate := config.DeepCopy()
-			configUpdate.Spec.HostNetwork.VpcID = vpcRes.Vpc.Id
-			configUpdate.Spec.HostNetwork.SubnetID = subnetRes.Subnet.Id
-			config, err = h.cceCC.Update(configUpdate)
-			return err
+			if result.Spec.HostNetwork.VpcID == vpcRes.Vpc.Id &&
+				result.Spec.HostNetwork.SubnetID == subnetRes.Subnet.Id {
+				config = result
+				return nil
+			}
+
+			result = result.DeepCopy()
+			result.Spec.HostNetwork.VpcID = vpcRes.Vpc.Id
+			result.Spec.HostNetwork.SubnetID = subnetRes.Subnet.Id
+			result, err = h.configClient.Update(result)
+			if err != nil {
+				return err
+			}
+			config = result
+			return nil
 		}); err != nil {
 			return config, err
 		}
@@ -423,27 +483,45 @@ func (h *Handler) generateAndSetNetworking(config *ccev1.CCEClusterConfig) (*cce
 		// Update status.
 		// Use the RetryOnConflict to prevent repeated creation of subnet.
 		if err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
-			config, err = h.cceCC.Get(config.Namespace, config.Name, metav1.GetOptions{})
+			result, err := h.configCache.Get(config.Namespace, config.Name)
 			if err != nil {
 				return err
 			}
-			configUpdate := config.DeepCopy()
-			configUpdate.Status.CreatedSubnetID = subnetRes.Subnet.Id
-			config, err = h.cceCC.UpdateStatus(configUpdate)
-			return err
+			if result.Status.CreatedSubnetID == subnetRes.Subnet.Id {
+				config = result
+				return nil
+			}
+
+			result = result.DeepCopy()
+			result.Status.CreatedSubnetID = subnetRes.Subnet.Id
+			result, err = h.configClient.UpdateStatus(result)
+			if err != nil {
+				return err
+			}
+			config = result
+			return nil
 		}); err != nil {
 			return config, err
 		}
 		// Update spec.
 		if err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
-			config, err = h.cceCC.Get(config.Namespace, config.Name, metav1.GetOptions{})
+			result, err := h.configCache.Get(config.Namespace, config.Name)
 			if err != nil {
 				return err
 			}
-			configUpdate := config.DeepCopy()
-			configUpdate.Spec.HostNetwork.SubnetID = subnetRes.Subnet.Id
-			config, err = h.cceCC.Update(configUpdate)
-			return err
+			if result.Spec.HostNetwork.SubnetID == subnetRes.Subnet.Id {
+				config = result
+				return nil
+			}
+
+			result = result.DeepCopy()
+			result.Spec.HostNetwork.SubnetID = subnetRes.Subnet.Id
+			result, err = h.configClient.Update(result)
+			if err != nil {
+				return err
+			}
+			config = result
+			return nil
 		}); err != nil {
 			return config, err
 		}
@@ -484,14 +562,23 @@ func (h *Handler) generateAndSetNetworking(config *ccev1.CCEClusterConfig) (*cce
 			natRes.NatGateway.Name, natRes.NatGateway.Id)
 		// Use the RetryOnConflict to prevent repeated creation of NAT Gateway.
 		if err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
-			config, err = h.cceCC.Get(config.Namespace, config.Name, metav1.GetOptions{})
+			result, err := h.configCache.Get(config.Namespace, config.Name)
 			if err != nil {
 				return err
 			}
-			configUpdate := config.DeepCopy()
-			configUpdate.Status.CreatedNatGatewayID = natRes.NatGateway.Id
-			config, err = h.cceCC.UpdateStatus(configUpdate)
-			return err
+			if result.Status.CreatedNatGatewayID == natRes.NatGateway.Id {
+				config = result
+				return nil
+			}
+
+			result = result.DeepCopy()
+			result.Status.CreatedNatGatewayID = natRes.NatGateway.Id
+			result, err = h.configClient.UpdateStatus(result)
+			if err != nil {
+				return err
+			}
+			config = result
+			return nil
 		}); err != nil {
 			return config, err
 		}
@@ -527,14 +614,23 @@ func (h *Handler) generateAndSetNetworking(config *ccev1.CCEClusterConfig) (*cce
 			snatEipID = utils.Value(eipRes.Publicip.Id)
 			// Use the RetryOnConflict to prevent repeated creation of EIP used by SNAT Rule.
 			if err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
-				config, err = h.cceCC.Get(config.Namespace, config.Name, metav1.GetOptions{})
+				result, err := h.configCache.Get(config.Namespace, config.Name)
 				if err != nil {
 					return err
 				}
-				configUpdate := config.DeepCopy()
-				configUpdate.Status.CreatedSNatRuleEIPID = utils.Value(eipRes.Publicip.Id)
-				config, err = h.cceCC.UpdateStatus(configUpdate)
-				return err
+				if result.Status.CreatedSNatRuleEIPID == utils.Value(eipRes.Publicip.Id) {
+					config = result
+					return nil
+				}
+
+				result = result.DeepCopy()
+				result.Status.CreatedSNatRuleEIPID = utils.Value(eipRes.Publicip.Id)
+				result, err = h.configClient.UpdateStatus(result)
+				if err != nil {
+					return err
+				}
+				config = result
+				return nil
 			}); err != nil {
 				return config, err
 			}
@@ -561,14 +657,23 @@ func (h *Handler) generateAndSetNetworking(config *ccev1.CCEClusterConfig) (*cce
 		}).Infof("created SNAT Rule [%s]", snatRuleRes.SnatRule.Id)
 		// Use the RetryOnConflict to prevent repeated creation of SNAT Rule.
 		if err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
-			config, err = h.cceCC.Get(config.Namespace, config.Name, metav1.GetOptions{})
+			result, err := h.configCache.Get(config.Namespace, config.Name)
 			if err != nil {
 				return err
 			}
-			configUpdate := config.DeepCopy()
-			configUpdate.Status.CreatedSNATRuleID = snatRuleRes.SnatRule.Id
-			config, err = h.cceCC.UpdateStatus(configUpdate)
-			return err
+			if result.Status.CreatedSNATRuleID == snatRuleRes.SnatRule.Id {
+				config = result
+				return nil
+			}
+
+			result = result.DeepCopy()
+			result.Status.CreatedSNATRuleID = snatRuleRes.SnatRule.Id
+			result, err = h.configClient.UpdateStatus(result)
+			if err != nil {
+				return err
+			}
+			config = result
+			return nil
 		}); err != nil {
 			return config, err
 		}
@@ -599,20 +704,20 @@ func (h *Handler) waitForCreationComplete(config *ccev1.CCEClusterConfig) (*ccev
 			"phase":   config.Status.Phase,
 		}).Infof("cluster [%s] ID [%s] created successfully",
 			config.Spec.Name, config.Spec.ClusterID)
-		config = config.DeepCopy()
-		config.Status.Phase = cceConfigUpdatingPhase
-		config, err = h.cceCC.UpdateStatus(config)
+		configUpdate := config.DeepCopy()
+		configUpdate.Status.Phase = cceConfigUpdatingPhase
+		configUpdate, err = h.configClient.UpdateStatus(configUpdate)
 		if err != nil {
 			return config, err
 		}
-		return config, nil
+		return configUpdate, nil
 	}
 	logrus.WithFields(logrus.Fields{
 		"cluster": config.Name,
 		"phase":   config.Status.Phase,
 	}).Infof("waiting for cluster [%s] status [%s]",
 		config.Spec.Name, utils.Value(cluster.Status.Phase))
-	h.cceEnqueueAfter(config.Namespace, config.Name, 30*time.Second)
+	h.enqueueAfter(config.Namespace, config.Name, 30*time.Second)
 
 	return config, nil
 }
@@ -621,14 +726,14 @@ func (h *Handler) checkAndUpdate(config *ccev1.CCEClusterConfig) (*ccev1.CCEClus
 	driver := h.drivers[config.Spec.HuaweiCredentialSecret]
 	if err := validateUpdate(config); err != nil {
 		// validation failed, will be considered a failing update until resolved
-		config = config.DeepCopy()
-		config.Status.Phase = cceConfigUpdatingPhase
+		configUpdate := config.DeepCopy()
+		configUpdate.Status.Phase = cceConfigUpdatingPhase
 		var updateErr error
-		config, updateErr = h.cceCC.UpdateStatus(config)
+		configUpdate, updateErr = h.configClient.UpdateStatus(configUpdate)
 		if updateErr != nil {
 			return config, updateErr
 		}
-		return config, err
+		return configUpdate, err
 	}
 
 	// Get cluster status.
@@ -649,18 +754,26 @@ func (h *Handler) checkAndUpdate(config *ccev1.CCEClusterConfig) (*ccev1.CCEClus
 		if !ok {
 			// Delete UpgradeClusterTaskID if the config cluster version match
 			// the upstream cluster version.
-			config = config.DeepCopy()
-			config.Status.UpgradeClusterTaskID = ""
-			return h.cceCC.UpdateStatus(config)
+			configUpdate := config.DeepCopy()
+			configUpdate.Status.UpgradeClusterTaskID = ""
+			configUpdate, err := h.configClient.UpdateStatus(configUpdate)
+			if err != nil {
+				return config, err
+			}
+			return configUpdate, nil
 		}
 
 		res, err := cce.ShowUpgradeClusterTask(driver.CCE, config.Spec.ClusterID, config.Status.UpgradeClusterTaskID)
 		if err != nil {
 			hwerr, _ := huawei.NewError(err)
 			if hwerr.StatusCode == 404 {
-				config = config.DeepCopy()
-				config.Status.UpgradeClusterTaskID = ""
-				return h.cceCC.UpdateStatus(config)
+				configUpdate := config.DeepCopy()
+				configUpdate.Status.UpgradeClusterTaskID = ""
+				configUpdate, err := h.configClient.UpdateStatus(configUpdate)
+				if err != nil {
+					return config, err
+				}
+				return configUpdate, nil
 			}
 			return config, err
 		}
@@ -672,9 +785,13 @@ func (h *Handler) checkAndUpdate(config *ccev1.CCEClusterConfig) (*ccev1.CCEClus
 					"phase":   config.Status.Phase,
 				}).Infof("cluster [%s] upgrade to [%v]",
 					config.Spec.Name, utils.Value(cluster.Spec.Version))
-				config = config.DeepCopy()
-				config.Status.UpgradeClusterTaskID = ""
-				return h.cceCC.UpdateStatus(config)
+				configUpdate := config.DeepCopy()
+				configUpdate.Status.UpgradeClusterTaskID = ""
+				configUpdate, err = h.configClient.UpdateStatus(configUpdate)
+				if err != nil {
+					return config, err
+				}
+				return configUpdate, nil
 			case "Failed":
 				return config, fmt.Errorf("failed to upgrade cluster [%s] to %v, status [%s]",
 					config.Spec.Name, config.Spec.Version, utils.Value(res.Status.Phase))
@@ -685,7 +802,7 @@ func (h *Handler) checkAndUpdate(config *ccev1.CCEClusterConfig) (*ccev1.CCEClus
 				}).Infof("waiting for cluster [%s] upgrade task status [%s]",
 					config.Spec.Name, utils.Value(res.Status.Phase))
 			}
-			h.cceEnqueueAfter(config.Namespace, config.Name, 30*time.Second)
+			h.enqueueAfter(config.Namespace, config.Name, 30*time.Second)
 			return config, nil
 		}
 	}
@@ -703,11 +820,12 @@ func (h *Handler) checkAndUpdate(config *ccev1.CCEClusterConfig) (*ccev1.CCEClus
 		if config.Status.Phase != cceConfigUpdatingPhase {
 			configUpdate := config.DeepCopy()
 			configUpdate.Status.Phase = cceConfigUpdatingPhase
-			if config, err = h.cceCC.UpdateStatus(configUpdate); err != nil {
+			if configUpdate, err = h.configClient.UpdateStatus(configUpdate); err != nil {
 				return config, err
 			}
+			config = configUpdate
 		}
-		h.cceEnqueueAfter(config.Namespace, config.Name, 30*time.Second)
+		h.enqueueAfter(config.Namespace, config.Name, 30*time.Second)
 		return config, nil
 	}
 	configUpdate := config.DeepCopy()
@@ -740,21 +858,20 @@ func (h *Handler) checkAndUpdate(config *ccev1.CCEClusterConfig) (*ccev1.CCEClus
 		updateStatus = true
 	}
 	if updateStatus {
-		if config, err = h.cceCC.UpdateStatus(configUpdate); err != nil {
+		configUpdate, err := h.configClient.UpdateStatus(configUpdate)
+		if err != nil {
 			return config, err
 		}
+		config = configUpdate
 	}
 
-	if config, err = h.cceCC.Get(config.Namespace, config.Name, metav1.GetOptions{}); err != nil {
-		return config, err
-	}
 	if len(config.Spec.CreatedNodePoolIDs) > 0 {
 		logrus.WithFields(logrus.Fields{
 			"cluster": config.Name,
 			"phase":   config.Status.Phase,
 		}).Debugf("waiting for cce-operator-controller (Rancher) to update nodePool ID: %v",
 			utils.PrintObject(config.Spec.CreatedNodePoolIDs))
-		h.cceEnqueueAfter(config.Namespace, config.Name, 10*time.Second)
+		h.enqueueAfter(config.Namespace, config.Name, 10*time.Second)
 		return config, nil
 	}
 
@@ -788,13 +905,15 @@ func (h *Handler) checkAndUpdate(config *ccev1.CCEClusterConfig) (*ccev1.CCEClus
 			}).Infof("waiting for nodepool %q %q status: %q",
 				np.Metadata.Name, utils.Value(np.Metadata.Uid), np.Status.Phase.Value())
 			if config.Status.Phase != cceConfigUpdatingPhase {
-				config = config.DeepCopy()
-				config.Status.Phase = cceConfigUpdatingPhase
-				if config, err = h.cceCC.UpdateStatus(config); err != nil {
+				configUpdate := config.DeepCopy()
+				configUpdate.Status.Phase = cceConfigUpdatingPhase
+				configUpdate, err = h.configClient.UpdateStatus(configUpdate)
+				if err != nil {
 					return config, err
 				}
+				config = configUpdate
 			}
-			h.cceEnqueueAfter(config.Namespace, config.Name, 30*time.Second)
+			h.enqueueAfter(config.Namespace, config.Name, 30*time.Second)
 			return config, nil
 		}
 	}
@@ -822,13 +941,13 @@ func (h *Handler) updateUpstreamClusterState(
 				"cluster": config.Name,
 				"phase":   config.Status.Phase,
 			}).Infof("cluster [%s] finished updating", config.Spec.Name)
-			config = config.DeepCopy()
-			config.Status.Phase = cceConfigActivePhase
-			config, err = h.cceCC.UpdateStatus(config)
+			configUpdate := config.DeepCopy()
+			configUpdate.Status.Phase = cceConfigActivePhase
+			configUpdate, err = h.configClient.UpdateStatus(configUpdate)
 			if err != nil {
 				return config, err
 			}
-			return config, nil
+			return configUpdate, nil
 		}
 		return config, nil
 	}
@@ -839,10 +958,11 @@ func (h *Handler) updateUpstreamClusterState(
 		config.Spec.HostNetwork.SecurityGroup != upstreamSpec.HostNetwork.SecurityGroup {
 		configUpdate := config.DeepCopy()
 		configUpdate.Spec.HostNetwork.SecurityGroup = upstreamSpec.HostNetwork.SecurityGroup
-		config, err = h.cceCC.Update(configUpdate)
+		configUpdate, err = h.configClient.Update(configUpdate)
 		if err != nil {
 			return config, err
 		}
+		config = configUpdate
 	}
 
 	// Check kubernetes version for upgrade cluster.
@@ -888,14 +1008,22 @@ func (h *Handler) updateUpstreamClusterState(
 		}).Infof("start resize cluster [%s] job ID %q",
 			config.Spec.Name, utils.Value(res.JobID))
 		err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
-			config, err = h.cceCC.Get(config.Namespace, config.Name, metav1.GetOptions{})
+			result, err := h.configCache.Get(config.Namespace, config.Name)
 			if err != nil {
 				return err
 			}
-			configUpdate := config.DeepCopy()
-			configUpdate.Status.ResizeClusterJobID = utils.Value(res.JobID)
-			config, err = h.cceCC.UpdateStatus(configUpdate)
-			return err
+			if result.Status.ResizeClusterJobID == utils.Value(res.JobID) {
+				config = result
+				return nil
+			}
+			result = result.DeepCopy()
+			result.Status.ResizeClusterJobID = utils.Value(res.JobID)
+			result, err = h.configClient.UpdateStatus(result)
+			if err != nil {
+				return err
+			}
+			config = result
+			return nil
 		})
 		if err != nil {
 			return config, err
@@ -973,14 +1101,23 @@ func (h *Handler) updateUpstreamClusterState(
 		// Update CreatedNodePoolIDs map to let cce-operator-controller (in Rancher)
 		// know that some node pools were created by operator and update its ID properly.
 		if err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
-			config, err = h.cceCC.Get(config.Namespace, config.Name, metav1.GetOptions{})
+			result, err := h.configCache.Get(config.Namespace, config.Name)
 			if err != nil {
 				return err
 			}
-			configUpdate := config.DeepCopy()
-			configUpdate.Spec.CreatedNodePoolIDs = createdNodePoolIDs
-			config, err = h.cceCC.Update(configUpdate)
-			return err
+			if reflect.DeepEqual(result.Spec.CreatedNodePoolIDs, createdNodePoolIDs) {
+				config = result
+				return nil
+			}
+
+			result = result.DeepCopy()
+			result.Spec.CreatedNodePoolIDs = createdNodePoolIDs
+			result, err = h.configClient.Update(result)
+			if err != nil {
+				return nil
+			}
+			config = result
+			return nil
 		}); err != nil {
 			return config, err
 		}
@@ -1009,19 +1146,23 @@ func (h *Handler) updateUpstreamClusterState(
 	if enqueueNodePool {
 		if config.Status.Phase != cceConfigUpdatingPhase {
 			if err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
-				config, err = h.cceCC.Get(config.Namespace, config.Name, metav1.GetOptions{})
+				result, err := h.configCache.Get(config.Namespace, config.Name)
 				if err != nil {
 					return err
 				}
-				config = config.DeepCopy()
-				config.Status.Phase = cceConfigUpdatingPhase
-				config, err = h.cceCC.UpdateStatus(config)
-				return err
+				result = result.DeepCopy()
+				result.Status.Phase = cceConfigUpdatingPhase
+				result, err = h.configClient.UpdateStatus(result)
+				if err != nil {
+					return err
+				}
+				config = result
+				return nil
 			}); err != nil {
 				return config, err
 			}
 		}
-		h.cceEnqueueAfter(config.Namespace, config.Name, 10*time.Second)
+		h.enqueueAfter(config.Namespace, config.Name, 10*time.Second)
 		return config, nil
 	}
 
@@ -1030,13 +1171,13 @@ func (h *Handler) updateUpstreamClusterState(
 			"cluster": config.Name,
 			"phase":   config.Status.Phase,
 		}).Infof("cluster [%s] finished updating", config.Spec.Name)
-		config = config.DeepCopy()
-		config.Status.Phase = cceConfigActivePhase
-		config, err = h.cceCC.UpdateStatus(config)
+		configUpdate := config.DeepCopy()
+		configUpdate.Status.Phase = cceConfigActivePhase
+		configUpdate, err = h.configClient.UpdateStatus(configUpdate)
 		if err != nil {
 			return config, err
 		}
-		return config, nil
+		return configUpdate, nil
 	}
 	return config, nil
 }
@@ -1063,7 +1204,7 @@ func (h *Handler) importCluster(config *ccev1.CCEClusterConfig) (*ccev1.CCEClust
 			"phase":   config.Status.Phase,
 		}).Infof("waiting for cluster [%s] finish status [%s]",
 			config.Spec.Name, utils.Value(cluster.Status.Phase))
-		h.cceEnqueueAfter(config.Namespace, config.Name, 15*time.Second)
+		h.enqueueAfter(config.Namespace, config.Name, 15*time.Second)
 		return config, nil
 	}
 
@@ -1093,30 +1234,44 @@ func (h *Handler) importCluster(config *ccev1.CCEClusterConfig) (*ccev1.CCEClust
 	}
 
 	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		config, err = h.cceCC.Get(config.Namespace, config.Name, metav1.GetOptions{})
+		result, err := h.configCache.Get(config.Namespace, config.Name)
 		if err != nil {
 			return err
 		}
-		configUpdate := config.DeepCopy()
-		configUpdate.Status.ClusterExternalIP = clusterExternalIP
-		config, err = h.cceCC.UpdateStatus(configUpdate)
-		return err
+		result = result.DeepCopy()
+		result.Status.ClusterExternalIP = clusterExternalIP
+		result, err = h.configClient.UpdateStatus(result)
+		if err != nil {
+			return err
+		}
+		config = result
+		return nil
 	})
+	if err != nil {
+		return config, err
+	}
 
 	if err = h.createCASecret(config); err != nil {
 		return config, err
 	}
 
 	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		config, err = h.cceCC.Get(config.Namespace, config.Name, metav1.GetOptions{})
+		result, err := h.configCache.Get(config.Namespace, config.Name)
 		if err != nil {
 			return err
 		}
-		configUpdate := config.DeepCopy()
-		configUpdate.Status.Phase = cceConfigActivePhase
-		config, err = h.cceCC.UpdateStatus(configUpdate)
-		return err
+		result = result.DeepCopy()
+		result.Status.Phase = cceConfigActivePhase
+		result, err = h.configClient.UpdateStatus(result)
+		if err != nil {
+			return err
+		}
+		config = result
+		return nil
 	})
+	if err != nil {
+		return config, err
+	}
 
 	return config, nil
 }
@@ -1149,11 +1304,6 @@ func (h *Handler) createCASecret(config *ccev1.CCEClusterConfig) error {
 		return fmt.Errorf("createCASecret: ClusterCert is nil pointer")
 	}
 
-	if _, err = h.secrets.Get(config.Namespace, config.Name, metav1.GetOptions{}); err == nil {
-		// Secret already created
-		return nil
-	}
-
 	endpoint := utils.Value(clusterCert.Cluster.Server)
 	ca := utils.Value(clusterCert.Cluster.CertificateAuthorityData)
 	secret := &corev1.Secret{
@@ -1174,7 +1324,10 @@ func (h *Handler) createCASecret(config *ccev1.CCEClusterConfig) error {
 			"ca":       []byte(ca),
 		},
 	}
-	if _, err = h.secrets.Create(secret); err != nil {
+	if _, err = h.secretsClient.Create(secret); err != nil {
+		if errors.IsAlreadyExists(err) {
+			return nil
+		}
 		return err
 	}
 	logrus.WithFields(logrus.Fields{
@@ -1190,19 +1343,25 @@ func (h *Handler) createCASecret(config *ccev1.CCEClusterConfig) error {
 // onChange handler to start waiting on the update.
 func (h *Handler) enqueueUpdate(config *ccev1.CCEClusterConfig) (*ccev1.CCEClusterConfig, error) {
 	if config.Status.Phase == cceConfigUpdatingPhase {
-		h.cceEnqueue(config.Namespace, config.Name)
+		h.enqueue(config.Namespace, config.Name)
 		return config, nil
 	}
-	var err error
-	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		config, err = h.cceCC.Get(config.Namespace, config.Name, metav1.GetOptions{})
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		result, err := h.configCache.Get(config.Namespace, config.Name)
 		if err != nil {
 			return err
 		}
-		config = config.DeepCopy()
-		config.Status.Phase = cceConfigUpdatingPhase
-		config, err = h.cceCC.UpdateStatus(config)
-		return err
+		result = result.DeepCopy()
+		result.Status.Phase = cceConfigUpdatingPhase
+		result, err = h.configClient.UpdateStatus(result)
+		if err != nil {
+			return err
+		}
+		config = result
+		return nil
 	})
-	return config, err
+	if err != nil {
+		return config, err
+	}
+	return config, nil
 }

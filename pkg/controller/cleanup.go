@@ -136,16 +136,21 @@ func (h *Handler) deleteCCECluster(
 			"cluster": config.Name,
 			"phase":   "remove",
 		}).Infof("deleted cluster [%s]", config.Spec.Name)
-		config = config.DeepCopy()
-		config.Spec.ClusterID = ""
-		config, err = h.cceCC.Update(config)
+		configUpdate := config.DeepCopy()
+		configUpdate.Spec.ClusterID = ""
+		configUpdate, err = h.configClient.Update(configUpdate)
 		if err != nil {
 			return config, false, err
 		}
-		config = config.DeepCopy()
-		config.Status.ClusterExternalIP = ""
-		config, err = h.cceCC.UpdateStatus(config)
-		return config, false, err
+		config = configUpdate
+
+		configUpdate = config.DeepCopy()
+		configUpdate.Status.ClusterExternalIP = ""
+		configUpdate, err = h.configClient.UpdateStatus(configUpdate)
+		if err != nil {
+			return config, false, err
+		}
+		return configUpdate, false, nil
 	} else if err != nil {
 		return config, false, err
 	}
@@ -216,11 +221,14 @@ func (h *Handler) deleteNetworkResources(
 				"cluster": config.Name,
 				"phase":   "remove",
 			}).Infof("NAT Gateway [%s] deleted", natID)
-			config = config.DeepCopy()
-			config.Status.CreatedNatGatewayID = ""
-			config.Status.CreatedSNATRuleID = ""
-			config, err = h.cceCC.UpdateStatus(config)
-			return config, true, err
+			configUpdate := config.DeepCopy()
+			configUpdate.Status.CreatedNatGatewayID = ""
+			configUpdate.Status.CreatedSNATRuleID = ""
+			configUpdate, err = h.configClient.UpdateStatus(configUpdate)
+			if err != nil {
+				return config, true, err
+			}
+			return configUpdate, true, nil
 		} else if err != nil {
 			return config, false, err
 		}
@@ -241,14 +249,18 @@ func (h *Handler) deleteNetworkResources(
 		eipID := config.Status.CreatedClusterEIPID
 		_, err = eip.ShowPublicip(driver.EIP, eipID)
 		if hwerr, _ := huawei.NewError(err); hwerr.StatusCode == 404 {
-			config = config.DeepCopy()
-			config.Status.CreatedClusterEIPID = ""
-			config, err = h.cceCC.UpdateStatus(config)
+			configUpdate := config.DeepCopy()
+			configUpdate.Status.CreatedClusterEIPID = ""
+			configUpdate, err = h.configClient.UpdateStatus(configUpdate)
+			if err != nil {
+				return config, true, err
+			}
+			config = configUpdate
 			logrus.WithFields(logrus.Fields{
 				"cluster": config.Name,
 				"phase":   "remove",
 			}).Infof("cluster EIP [%s] deleted", eipID)
-			return config, true, err
+			return config, true, nil
 		} else if err != nil {
 			return config, false, err
 		}
@@ -265,14 +277,17 @@ func (h *Handler) deleteNetworkResources(
 		eipID := config.Status.CreatedSNatRuleEIPID
 		_, err = eip.ShowPublicip(driver.EIP, eipID)
 		if hwerr, _ := huawei.NewError(err); hwerr.StatusCode == 404 {
-			config = config.DeepCopy()
-			config.Status.CreatedSNatRuleEIPID = ""
-			config, err = h.cceCC.UpdateStatus(config)
+			configUpdate := config.DeepCopy()
+			configUpdate.Status.CreatedSNatRuleEIPID = ""
+			configUpdate, err = h.configClient.UpdateStatus(configUpdate)
+			if err != nil {
+				return config, true, err
+			}
 			logrus.WithFields(logrus.Fields{
 				"cluster": config.Name,
 				"phase":   "remove",
 			}).Infof("SNAT Rule EIP [%s] deleted", eipID)
-			return config, true, err
+			return configUpdate, true, nil
 		} else if err != nil {
 			return config, false, err
 		}
@@ -297,10 +312,13 @@ func (h *Handler) deleteNetworkResources(
 				"cluster": config.Name,
 				"phase":   "remove",
 			}).Infof("subnet [%s] deleted", subnetID)
-			config = config.DeepCopy()
-			config.Status.CreatedSubnetID = ""
-			config, err = h.cceCC.UpdateStatus(config)
-			return config, true, err
+			configUpdate := config.DeepCopy()
+			configUpdate.Status.CreatedSubnetID = ""
+			configUpdate, err = h.configClient.UpdateStatus(config)
+			if err != nil {
+				return config, true, err
+			}
+			return configUpdate, true, nil
 		} else if err != nil {
 			return config, false, err
 		}
@@ -348,10 +366,13 @@ func (h *Handler) deleteNetworkResources(
 				"cluster": config.Name,
 				"phase":   "remove",
 			}).Infof("vpc [%s] deleted", vpcID)
-			config = config.DeepCopy()
-			config.Status.CreatedVpcID = ""
-			config, err = h.cceCC.UpdateStatus(config)
-			return config, true, err
+			configUpdate := config.DeepCopy()
+			configUpdate.Status.CreatedVpcID = ""
+			configUpdate, err = h.configClient.UpdateStatus(configUpdate)
+			if err != nil {
+				return config, true, err
+			}
+			return configUpdate, true, nil
 		} else if err != nil {
 			return config, false, err
 		}

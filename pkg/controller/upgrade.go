@@ -8,7 +8,6 @@ import (
 	"github.com/cnrancher/cce-operator/pkg/huawei/cce"
 	"github.com/cnrancher/cce-operator/pkg/utils"
 	"github.com/sirupsen/logrus"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/util/retry"
 )
 
@@ -29,14 +28,18 @@ func (h *Handler) upgradeCluster(
 	}).Infof("start upgrade cluster [%s] to %q, task id [%s]",
 		config.Spec.Name, config.Spec.Version, utils.Value(res.Metadata.Uid))
 	err = retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		config, err = h.cceCC.Get(config.Namespace, config.Name, metav1.GetOptions{})
+		result, err := h.configCache.Get(config.Namespace, config.Name)
 		if err != nil {
 			return err
 		}
-		configUpdate := config.DeepCopy()
-		configUpdate.Status.UpgradeClusterTaskID = utils.Value(res.Metadata.Uid)
-		config, err = h.cceCC.UpdateStatus(configUpdate)
-		return err
+		result = result.DeepCopy()
+		result.Status.UpgradeClusterTaskID = utils.Value(res.Metadata.Uid)
+		result, err = h.configClient.UpdateStatus(result)
+		if err != nil {
+			return err
+		}
+		config = result
+		return nil
 	})
 	if err != nil {
 		return config, err
