@@ -166,20 +166,23 @@ func (h *Handler) create(config *ccev1.CCEClusterConfig) (*ccev1.CCEClusterConfi
 	}
 
 	if config.Spec.ClusterID != "" {
-		if _, err := cce.ShowCluster(driver.CCE, config.Spec.ClusterID); err == nil {
-			logrus.WithFields(logrus.Fields{
-				"cluster": config.Name,
-				"phase":   "create",
-			}).Infof("cluster [%s] ID [%s] created, switch to creating phase",
-				config.Spec.Name, config.Spec.ClusterID)
-			configUpdate := config.DeepCopy()
-			configUpdate.Status.Phase = cceConfigCreatingPhase
-			configUpdate, err = h.configClient.UpdateStatus(config)
-			if err != nil {
-				return config, err
-			}
-			return configUpdate, nil
+		if _, err := cce.ShowCluster(driver.CCE, config.Spec.ClusterID); err != nil {
+			return config, fmt.Errorf("failed to show cluster by ID %q: %w",
+				config.Spec.ClusterID, err)
 		}
+		logrus.WithFields(logrus.Fields{
+			"cluster": config.Name,
+			"phase":   "create",
+		}).Infof("cluster [%s] ID [%s] created, switch to creating phase",
+			config.Spec.Name, config.Spec.ClusterID)
+		configUpdate := config.DeepCopy()
+		configUpdate.Status.Phase = cceConfigCreatingPhase
+		configUpdate, err = h.configClient.UpdateStatus(configUpdate)
+		if err != nil {
+			return config, err
+		}
+		h.enqueueAfter(config.Namespace, config.Name, time.Second*5)
+		return configUpdate, nil
 	}
 	// Create cluster.
 	cluster, err := cce.CreateCluster(driver.CCE, config)
@@ -226,7 +229,7 @@ func (h *Handler) create(config *ccev1.CCEClusterConfig) (*ccev1.CCEClusterConfi
 		result = result.DeepCopy()
 		result.Status.Phase = cceConfigCreatingPhase
 		result.Status.FailureMessage = ""
-		result, err = h.configClient.UpdateStatus(config)
+		result, err = h.configClient.UpdateStatus(result)
 		if err != nil {
 			return err
 		}
@@ -240,6 +243,7 @@ func (h *Handler) create(config *ccev1.CCEClusterConfig) (*ccev1.CCEClusterConfi
 		"phase":   "create",
 	}).Infof("request to create cluster name [%s] ID [%s]",
 		config.Spec.Name, config.Spec.ClusterID)
+	h.enqueueAfter(config.Namespace, config.Name, time.Second*5)
 	return config, err
 }
 
@@ -1036,6 +1040,7 @@ func (h *Handler) updateUpstreamClusterState(
 		return config, err
 	}
 	// Update nodePool infos.
+	enqueueNodePool := false
 	for _, np := range config.Spec.NodePools {
 		if np.ID == "" {
 			continue
@@ -1044,10 +1049,24 @@ func (h *Handler) updateUpstreamClusterState(
 		if err != nil {
 			return config, err
 		}
+		// Update cluster status phase to Updating if node scaled.
+		for _, up := range upstreamSpec.NodePools {
+			if up.ID != np.ID {
+				continue
+			}
+			if up.InitialNodeCount != np.InitialNodeCount {
+				logrus.WithFields(logrus.Fields{
+					"cluster": config.Name,
+					"phase":   config.Status.Phase,
+				}).Infof("cluster [%s] nodePool [%v] node count scaled",
+					config.Spec.Name, up.ID)
+				enqueueNodePool = true
+				break
+			}
+		}
 	}
 
 	// Compare nodePools between upstream & config spec.
-	enqueueNodePool := false
 	upstreamNodePoolIDs := make(map[string]bool, len(upstreamSpec.NodePools))
 	upstreamNodePoolNames := make(map[string]bool, len(upstreamSpec.NodePools))
 	specNodePoolIDs := make(map[string]bool, len(config.Spec.NodePools))

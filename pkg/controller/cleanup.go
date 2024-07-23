@@ -314,7 +314,7 @@ func (h *Handler) deleteNetworkResources(
 			}).Infof("subnet [%s] deleted", subnetID)
 			configUpdate := config.DeepCopy()
 			configUpdate.Status.CreatedSubnetID = ""
-			configUpdate, err = h.configClient.UpdateStatus(config)
+			configUpdate, err = h.configClient.UpdateStatus(configUpdate)
 			if err != nil {
 				return config, true, err
 			}
