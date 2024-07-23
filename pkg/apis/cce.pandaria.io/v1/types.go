@@ -166,7 +166,7 @@ type CCEClusterPublicIP struct {
 }
 
 type CCENodePublicIP struct {
-	Ids   []string `json:"ids,omitempty"`   // 已有的弹性IP的ID列表。数量不得大于待创建节点数
+	IDs   []string `json:"ids,omitempty"`   // 已有的弹性IP的ID列表。数量不得大于待创建节点数
 	Count int32    `json:"count,omitempty"` // 要动态创建的弹性IP个数。
 	Eip   CCEEip   `json:"eip,omitempty"`   // 弹性IP参数。
 }

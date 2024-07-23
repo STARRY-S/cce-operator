@@ -158,7 +158,7 @@ func BuildUpstreamNodePoolConfigs(
 			}
 		}
 		if np.Spec.NodeTemplate.PublicIP != nil {
-			config.NodeTemplate.PublicIP.Ids = utils.Value(np.Spec.NodeTemplate.PublicIP.Ids)
+			config.NodeTemplate.PublicIP.IDs = utils.Value(np.Spec.NodeTemplate.PublicIP.Ids)
 			config.NodeTemplate.PublicIP.Count = utils.Value(np.Spec.NodeTemplate.Count)
 			if np.Spec.NodeTemplate.PublicIP.Eip != nil {
 				config.NodeTemplate.PublicIP.Eip.Iptype = np.Spec.NodeTemplate.PublicIP.Eip.Iptype
